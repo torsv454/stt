@@ -2,11 +2,7 @@
 //!   
 //! ```
 //! let template = stt::Template::new("Hello $who$!");
-//! let lookup = |k: &str| if k == "who" {
-//!     Some(String::from("world"))
-//! } else {
-//!     None
-//! };
+//! let lookup = stt::SingleLookup::new("who","world");
 //! assert_eq!(template.render(&lookup),"Hello world!");
 //! ```
 #[derive(Debug, PartialEq, Clone)]
@@ -23,6 +19,92 @@ enum Mode {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Template {
     fragments: Vec<Fragment>,
+}
+
+pub trait Lookup {
+    fn lookup(&self, key: &str) -> Option<&str>;
+}
+
+pub struct ConstantLookup {
+    value: String,
+}
+
+impl ConstantLookup {
+    pub fn new(value: String) -> Self {
+        ConstantLookup { value }
+    }
+}
+
+impl Lookup for ConstantLookup {
+    fn lookup(&self, _key: &str) -> Option<&str> {
+        Some(&self.value)
+    }
+}
+
+pub struct EmptyLookup {}
+impl EmptyLookup {
+    pub fn new() -> Self {
+        EmptyLookup {}
+    }
+}
+
+impl Lookup for EmptyLookup {
+    fn lookup(&self, _key: &str) -> Option<&str> {
+        None
+    }
+}
+
+pub struct SingleLookup {
+    key: String,
+    value: String,
+}
+
+impl SingleLookup {
+    pub fn new(key: &str, value: &str) -> Self {
+        SingleLookup {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+}
+
+impl Lookup for SingleLookup {
+    fn lookup(&self, key: &str) -> Option<&str> {
+        if self.key == *key {
+            Some(&self.value)
+        } else {
+            None
+        }
+    }
+}
+
+pub struct ChainedLookup<'a> {
+    lookups: Vec<&'a Lookup>,
+}
+
+impl<'a> ChainedLookup<'a> {
+    fn new() -> Self {
+        ChainedLookup {
+            lookups: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, lookup: &'a Lookup) -> &Self {
+        self.lookups.push(lookup);
+        self
+    }
+}
+
+impl<'a> Lookup for ChainedLookup<'a> {
+    fn lookup(&self, key: &str) -> Option<&str> {
+        for lookup in &self.lookups {
+            let value = lookup.lookup(key);
+            if value.is_some() {
+                return value;
+            }
+        }
+        None
+    }
 }
 
 impl Template {
@@ -54,29 +136,19 @@ impl Template {
         if buf.len() > 0 {
             result.push(Fragment::Constant(buf.drain(..).collect()));
         }
-        println!("{:?}", result);
         Template { fragments: result }
     }
 
     pub fn set(self, key: &str, value: &str) -> Template {
-        self.partial(&|k| {
-            if k == key {
-                Some(value.to_owned())
-            } else {
-                None
-            }
-        })
+        self.partial(&SingleLookup::new(key, value))
     }
 
-    pub fn partial<F>(&self, lookup: &F) -> Template
-    where
-        F: Fn(&str) -> Option<String>,
-    {
+    pub fn partial(&self, lookup: &Lookup) -> Template {
         let mut fragments = Vec::new();
         for fragment in &self.fragments {
             match fragment {
-                Fragment::Variable(ref var) => match lookup(var) {
-                    Some(ref value) => fragments.push(Fragment::Constant(value.to_owned())),
+                Fragment::Variable(ref var) => match lookup.lookup(var) {
+                    Some(value) => fragments.push(Fragment::Constant(value.to_owned())),
                     _ => fragments.push(fragment.clone()),
                 },
                 _ => fragments.push(fragment.clone()),
@@ -85,16 +157,13 @@ impl Template {
         Template { fragments }
     }
 
-    pub fn render<F>(&self, lookup: &F) -> String
-    where
-        F: Fn(&str) -> Option<String>,
-    {
+    pub fn render(&self, lookup: &Lookup) -> String {
         let mut result = String::new();
         for fragment in &self.fragments {
             match fragment {
                 Fragment::Constant(text) => result.push_str(text),
-                Fragment::Variable(var) => match lookup(var) {
-                    Some(ref text) => result.push_str(text),
+                Fragment::Variable(var) => match lookup.lookup(var) {
+                    Some(text) => result.push_str(text),
                     _ => (),
                 },
             }
@@ -128,17 +197,13 @@ mod tests {
 
     #[test]
     fn empty_template_yields_empty_string() {
-        assert_eq!(Template::new("").render(&|_k| None), "");
+        assert_eq!(Template::new("").render(&EmptyLookup::new()), "");
     }
 
     #[test]
     fn variable_only_yields_value_of_variable() {
         assert_eq!(
-            Template::new("$foo$").render(&|k| if k == "foo" {
-                Some(String::from("value"))
-            } else {
-                None
-            }),
+            Template::new("$foo$").render(&SingleLookup::new("foo", "value")),
             "value"
         );
     }
@@ -146,11 +211,21 @@ mod tests {
     #[test]
     fn variable_wrapped_with_constants() {
         assert_eq!(
-            Template::new("Hello $who$!").render(&|k| if k == "who" {
-                Some(String::from("world"))
-            } else {
-                None
-            }),
+            Template::new("Hello $who$!").render(&SingleLookup::new("who", "world")),
+            "Hello world!"
+        );
+    }
+
+    #[test]
+    fn chained_lookup() {
+        let first = SingleLookup::new("alfa", "beta");
+        let second = SingleLookup::new("who", "world");
+        let mut lookup = ChainedLookup::new();
+        lookup.add(&first);
+        lookup.add(&second);
+
+        assert_eq!(
+            Template::new("Hello $who$!").render(&lookup),
             "Hello world!"
         );
     }
