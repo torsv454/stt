@@ -1,7 +1,7 @@
 //! The stt (Simple Text Template) crate provides a very simple text template engine.
 //!   
 //! ```
-//! let template = stt::Template::new("Hello $who$!");
+//! let template = stt::Template::new("Hello $who$!").unwrap();
 //! let lookup = stt::SingleLookup::new("who","world");
 //! assert_eq!(template.render(&lookup),"Hello world!");
 //! ```
@@ -11,6 +11,7 @@ enum Fragment {
     Variable(String),
 }
 
+#[derive(PartialEq, Debug)]
 enum Mode {
     Constant,
     Variable,
@@ -107,8 +108,13 @@ impl<'a> Lookup for ChainedLookup<'a> {
     }
 }
 
+#[derive(PartialEq, Debug)]
+pub enum ParseError {
+    UNTERMINATED_VARIABLE,
+}
+
 impl Template {
-    pub fn new(spec: &str) -> Template {
+    pub fn new(spec: &str) -> Result<Template, ParseError> {
         let mut result = Vec::new();
         let mut buf = String::new();
         let mut mode = Mode::Constant;
@@ -132,11 +138,16 @@ impl Template {
                 _ => buf.push(c),
             }
         }
-        // todo catch unterminated variable
-        if buf.len() > 0 {
-            result.push(Fragment::Constant(buf.drain(..).collect()));
+
+        if mode == Mode::Variable {
+            Err(ParseError::UNTERMINATED_VARIABLE)
+        } else {
+            if buf.len() > 0 {
+                result.push(Fragment::Constant(buf.drain(..).collect()));
+            }
+
+            Ok(Template { fragments: result })
         }
-        Template { fragments: result }
     }
 
     pub fn set(self, key: &str, value: &str) -> Template {
@@ -197,21 +208,21 @@ mod tests {
 
     #[test]
     fn empty_template_yields_empty_string() {
-        assert_eq!(Template::new("").render(&EmptyLookup::new()), "");
+        let template = Template::new("").unwrap();
+        assert_eq!(template.render(&EmptyLookup::new()), "");
     }
 
     #[test]
     fn variable_only_yields_value_of_variable() {
-        assert_eq!(
-            Template::new("$foo$").render(&SingleLookup::new("foo", "value")),
-            "value"
-        );
+        let template = Template::new("$foo$").unwrap();
+        assert_eq!(template.render(&SingleLookup::new("foo", "value")), "value");
     }
 
     #[test]
     fn variable_wrapped_with_constants() {
+        let template = Template::new("Hello $who$!").unwrap();
         assert_eq!(
-            Template::new("Hello $who$!").render(&SingleLookup::new("who", "world")),
+            template.render(&SingleLookup::new("who", "world")),
             "Hello world!"
         );
     }
@@ -224,10 +235,9 @@ mod tests {
         lookup.add(&first);
         lookup.add(&second);
 
-        assert_eq!(
-            Template::new("Hello $who$!").render(&lookup),
-            "Hello world!"
-        );
+        let template = Template::new("Hello $who$!").unwrap();
+
+        assert_eq!(template.render(&lookup), "Hello world!");
     }
 
 }
